@@ -39,10 +39,10 @@ cdef extern from "mupen64plus_core.h":
         M64ERR_UNSUPPORTED,
         M64ERR_WRONG_TYPE
 
-    #ctypedef enum m64p_core_caps:
-    #    M64CAPS_DYNAREC = 1,
-    #    M64CAPS_DEBUGGER = 2,
-    #    M64CAPS_CORE_COMPARE = 4
+    ctypedef enum m64p_core_caps:
+        M64CAPS_DYNAREC = 1,
+        M64CAPS_DEBUGGER = 2,
+        M64CAPS_CORE_COMPARE = 4
 
     ctypedef enum m64p_plugin_type:
         M64PLUGIN_NULL = 0,
