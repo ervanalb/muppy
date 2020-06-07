@@ -1,27 +1,5 @@
 cdef extern from "mupen64plus_core.h":
 
-    #ctypedef void * m64p_dynlib_handle;
-    #ctypedef void * m64p_handle;
-    #ctypedef void (*m64p_function)();
-
-    #ctypedef void (*m64p_frame_callback)(unsigned int FrameIndex);
-    #ctypedef void (*m64p_input_callback)();
-    #ctypedef void (*m64p_audio_callback)();
-    #ctypedef void (*m64p_vi_callback)();
-
-    #ctypedef enum m64p_type:
-    #    M64TYPE_INT = 1,
-    #    M64TYPE_FLOAT,
-    #    M64TYPE_BOOL,
-    #    M64TYPE_STRING
-
-    #ctypedef enum m64p_msg_level:
-    #    M64MSG_ERROR = 1,
-    #    M64MSG_WARNING,
-    #    M64MSG_INFO,
-    #    M64MSG_STATUS,
-    #    M64MSG_VERBOSE
-
     ctypedef enum m64p_error:
         M64ERR_SUCCESS = 0,
         M64ERR_NOT_INIT,
@@ -52,6 +30,47 @@ cdef extern from "mupen64plus_core.h":
         M64PLUGIN_INPUT,
         M64PLUGIN_CORE
 
+    ctypedef enum m64p_core_param:
+        M64CORE_EMU_STATE = 1,
+        M64CORE_VIDEO_MODE,
+        M64CORE_SAVESTATE_SLOT,
+        M64CORE_SPEED_FACTOR,
+        M64CORE_SPEED_LIMITER,
+        M64CORE_VIDEO_SIZE,
+        M64CORE_AUDIO_VOLUME,
+        M64CORE_AUDIO_MUTE,
+        M64CORE_INPUT_GAMESHARK,
+        M64CORE_STATE_LOADCOMPLETE,
+        M64CORE_STATE_SAVECOMPLETE
+
+    ctypedef void (*ptr_StateCallback)(void *Context, m64p_core_param param_type, int new_value)
+    ctypedef void (*ptr_DebugCallback)(void *Context, int level, const char *message)
+
+    m64p_error PluginGetVersion(m64p_plugin_type *, int *, int *, const char **, int *)
+    m64p_error CoreStartup(int, const char *, const char *, void *, ptr_DebugCallback, void *, ptr_StateCallback)
+    m64p_error CoreShutdown()
+
+    #ctypedef void * m64p_dynlib_handle;
+    #ctypedef void * m64p_handle;
+    #ctypedef void (*m64p_function)();
+
+    #ctypedef void (*m64p_frame_callback)(unsigned int FrameIndex);
+    #ctypedef void (*m64p_input_callback)();
+    #ctypedef void (*m64p_audio_callback)();
+    #ctypedef void (*m64p_vi_callback)();
+
+    #ctypedef enum m64p_type:
+    #    M64TYPE_INT = 1,
+    #    M64TYPE_FLOAT,
+    #    M64TYPE_BOOL,
+    #    M64TYPE_STRING
+
+    #ctypedef enum m64p_msg_level:
+    #    M64MSG_ERROR = 1,
+    #    M64MSG_WARNING,
+    #    M64MSG_INFO,
+    #    M64MSG_STATUS,
+    #    M64MSG_VERBOSE
     #ctypedef enum m64p_emu_state:
     #    M64EMU_STOPPED = 1,
     #    M64EMU_RUNNING,
@@ -64,19 +83,6 @@ cdef extern from "mupen64plus_core.h":
 
     #ctypedef enum m64p_video_flags:
     #    M64VIDEOFLAG_SUPPORT_RESIZING = 1
-
-    #ctypedef enum m64p_core_param:
-    #    M64CORE_EMU_STATE = 1,
-    #    M64CORE_VIDEO_MODE,
-    #    M64CORE_SAVESTATE_SLOT,
-    #    M64CORE_SPEED_FACTOR,
-    #    M64CORE_SPEED_LIMITER,
-    #    M64CORE_VIDEO_SIZE,
-    #    M64CORE_AUDIO_VOLUME,
-    #    M64CORE_AUDIO_MUTE,
-    #    M64CORE_INPUT_GAMESHARK,
-    #    M64CORE_STATE_LOADCOMPLETE,
-    #    M64CORE_STATE_SAVECOMPLETE
 
     #ctypedef enum m64p_command:
     #    M64CMD_NOP = 0,
@@ -274,8 +280,8 @@ cdef extern from "mupen64plus_core.h":
     #    m64p_error (*VidExtFuncResizeWindow)(int, int);
     #    uint32_t (*VidExtFuncGLGetDefaultFramebuffer)();
 
+
     #ctypedef m64p_error (*ptr_PluginGetVersion)(m64p_plugin_type *, int *, int *, const char **, int *);
-    m64p_error PluginGetVersion(m64p_plugin_type *, int *, int *, const char **, int *)
 
     #ctypedef m64p_error (*ptr_CoreGetAPIVersions)(int *, int *, int *, int *);
     #m64p_error CoreGetAPIVersions(int *, int *, int *, int *);
@@ -642,18 +648,9 @@ cdef extern from "mupen64plus_core.h":
 #typedef m64p_error (*ptr_ConfigExternalGetParameter)(m64p_handle, const char *, const char *, char *, int);
 #
 #m64p_error ConfigExternalGetParameter(m64p_handle, const char *, const char *, char *, int);
-#typedef void (*ptr_DebugCallback)(void *Context, int level, const char *message);
-#typedef void (*ptr_StateCallback)(void *Context, m64p_core_param param_type, int new_value);
 #
 #void DebugCallback(void *Context, int level, const char *message);
 #void StateCallback(void *Context, m64p_core_param param_type, int new_value);
-#
-#typedef m64p_error (*ptr_CoreStartup)(int, const char *, const char *, void *, ptr_DebugCallback, void *, ptr_StateCallback);
-#
-#m64p_error CoreStartup(int, const char *, const char *, void *, ptr_DebugCallback, void *, ptr_StateCallback);
-#
-#typedef m64p_error (*ptr_CoreShutdown)(void);
-#m64p_error CoreShutdown(void);
 #
 #typedef m64p_error (*ptr_CoreAttachPlugin)(m64p_plugin_type, m64p_dynlib_handle);
 #m64p_error CoreAttachPlugin(m64p_plugin_type, m64p_dynlib_handle);
