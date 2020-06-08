@@ -1,4 +1,5 @@
 cimport cmupen64plus as c
+cimport dlopen, dlclose, RTLD_LAZY, dlsym from dlfcn
 from enum import Enum, Flag
 from collections import namedtuple
 from typing import Optional
@@ -6,6 +7,9 @@ from typing import Optional
 CORE_API_VERSION = 0x20001
 
 class Mupen64PlusError(Exception):
+    pass
+
+class DynamicLibraryError(Exception):
     pass
 
 def check_rc(rc):
@@ -70,6 +74,42 @@ cdef void _state_callback(void *context, c.m64p_core_param param_type, int new_v
 
 cdef void _debug_callback(void *context, int level, const char *message):
     (<object>context).state_callback(level, message)
+
+def dl_check(success):
+    if success:
+        return success
+    raise DynamicLibraryError(str(dlerror(), encoding="utf8"))
+
+class Plugin:
+    def __init__(self, path: str):
+        self.handle = NULL
+        self.handle = dl_check(dlopen(bytes(path, encoding="utf8"), RTLD_LAZY))
+
+        setup_pointers()
+        check_rc(self.plugin_startup())
+        self.open = True
+
+    def setup_pointers(self):
+        self.plugin_startup_ptr = dl_check(dlsym(self.handle, b"PluginStartup"))
+        self.plugin_shutdown_ptr = dl_check(dlsym(self.handle, b"PluginShutdown"))
+        self.plugin_get_version_ptr = dl_check(dlsym(self.handle, b"PluginGetVersion"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        if self.handle:
+            dl_check(self.dlclose(self.handle) == 0)
+            self.handle = NULL
+
+    def __dealloc__(self):
+        self.close()
+
+    def plugin_startup(self, core: Core, 
+
 
 class Core:
     def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None):

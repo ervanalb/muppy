@@ -19,8 +19,6 @@ expanded_defs = expanded_defs.replace('__attribute__((visibility("default")))', 
 
 remove_words = ["PluginShutdown", "DebugCallback", "PluginStartup", "StateCallback"]
 
-print(expanded_defs)
-
 expanded_defs = "\n".join(l for l in expanded_defs.split("\n") if all(word not in l for word in remove_words))
 
 ffibuilder.cdef(expanded_defs)
@@ -43,3 +41,10 @@ ffibuilder.set_source("_m64",
 if __name__ == "__main__":
     ffibuilder.compile(tmpdir="cffi_tmp", verbose=True)
     import cffi_tmp._m64
+    syms = dir(cffi_tmp._m64.lib)
+
+    print("# This file generated using CFFI")
+
+    for sym in sorted(syms):
+        if sym.startswith("M64"):
+            print(sym, "=", getattr(cffi_tmp._m64.lib, sym))
