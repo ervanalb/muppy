@@ -3,6 +3,8 @@ from enum import IntEnum, IntFlag
 from collections import namedtuple
 from typing import Optional
 import ctypes, ctypes.util
+import logging
+import os
 
 CORE_API_VERSION = 0x20001
 
@@ -21,38 +23,52 @@ def gen_enum(base, name: str, prefix: str):
     syms = filter(lambda x: x.startswith(prefix), dir(C))
     return base(name, {sym[len(prefix):]: getattr(C, sym) for sym in syms})
 
-def check_rc(rc):
-    if rc == C.M64ERR_SUCCESS:
-        return
-
-    raise {
-        C.M64ERR_NOT_INIT: Mupen64PlusError("Not initialized"),
-        C.M64ERR_ALREADY_INIT: Mupen64PlusError("Already initialized"),
-        C.M64ERR_INCOMPATIBLE: Mupen64PlusError("Incompatible version"),
-        C.M64ERR_INPUT_ASSERT: Mupen64PlusError("Input assert"),
-        C.M64ERR_INPUT_INVALID: Mupen64PlusError("Input invalid"),
-        C.M64ERR_INPUT_NOT_FOUND: Mupen64PlusError("Input not found"),
-        C.M64ERR_NO_MEMORY: MemoryError(),
-        C.M64ERR_FILES: Mupen64PlusError("Files"),
-        C.M64ERR_INTERNAL: Mupen64PlusError("Internal error"),
-        C.M64ERR_INVALID_STATE: Mupen64PlusError("Invalid state"),
-        C.M64ERR_PLUGIN_FAIL: Mupen64PlusError("Plugin failed"),
-        C.M64ERR_SYSTEM_FAIL: Mupen64PlusError("System failed"),
-        C.M64ERR_UNSUPPORTED: Mupen64PlusError("Unsupported"),
-        C.M64ERR_WRONG_TYPE: Mupen64PlusError("Wrong type"),
-    }.get(rc, Mupen64PlusError("Unknown return code"))
-
 ## Enums
 
+Error = gen_enum(IntEnum, "Error", "M64ERR_")
 PluginType = gen_enum(IntEnum, "PluginType", "M64PLUGIN_")
 CoreCaps = gen_enum(IntFlag, "CoreCaps", "M64CAPS_")
 CoreParam = gen_enum(IntEnum, "CoreParam", "M64CORE_")
 MsgLevel = gen_enum(IntEnum, "MsgLevel", "M64MSG_")
 Command = gen_enum(IntEnum, "Command", "M64CMD_")
+Type = gen_enum(IntEnum, "Type", "M64TYPE_")
+
+LOGLEVEL = {
+    MsgLevel.ERROR: logging.ERROR,
+    MsgLevel.WARNING: logging.WARNING,
+    MsgLevel.INFO: logging.INFO,
+    MsgLevel.STATUS: logging.INFO,
+    MsgLevel.VERBOSE: logging.DEBUG,
+}
+
+logger = logging.getLogger(__name__)
 
 # Named tuples (for return values)
 
 Version = namedtuple("Version", ("plugin_type", "plugin_version", "api_version", "plugin_name", "capabilities"))
+
+# Util
+
+def check_rc(rc):
+    if rc == Error.SUCCESS:
+        return
+
+    raise {
+        Error.NOT_INIT: Mupen64PlusError("Not initialized"),
+        Error.ALREADY_INIT: Mupen64PlusError("Already initialized"),
+        Error.INCOMPATIBLE: Mupen64PlusError("Incompatible version"),
+        Error.INPUT_ASSERT: Mupen64PlusError("Input assert"),
+        Error.INPUT_INVALID: Mupen64PlusError("Input invalid"),
+        Error.INPUT_NOT_FOUND: Mupen64PlusError("Input not found"),
+        Error.NO_MEMORY: MemoryError(),
+        Error.FILES: Mupen64PlusError("Files"),
+        Error.INTERNAL: Mupen64PlusError("Internal error"),
+        Error.INVALID_STATE: Mupen64PlusError("Invalid state"),
+        Error.PLUGIN_FAIL: Mupen64PlusError("Plugin failed"),
+        Error.SYSTEM_FAIL: Mupen64PlusError("System failed"),
+        Error.UNSUPPORTED: Mupen64PlusError("Unsupported"),
+        Error.WRONG_TYPE: Mupen64PlusError("Wrong type"),
+    }.get(rc, Mupen64PlusError("Unknown return code"))
 
 # Functions
 
@@ -63,6 +79,7 @@ class DynamicLibrary:
         self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
         self.handle = ffi.dlopen(self.handle_raw)
         self.ptr = ffi.new_handle(self)
+        self.version = self.plugin_get_version()
 
     def __del__(self):
         pass
@@ -117,6 +134,7 @@ class Core(DynamicLibrary):
             _state_callback,
         ))
 
+        self.plugins = {}
         self.open = True
 
     def close(self):
@@ -129,13 +147,66 @@ class Core(DynamicLibrary):
         pass
 
     def debug_callback(self, level, message):
-        print(level, message)
+        loglvl = LOGLEVEL.get(level, logging.NOTSET)
+        logger.log(loglvl, message)
 
     def rom_open(self, rom: bytes):
         check_rc(self.handle.CoreDoCommand(Command.ROM_OPEN, len(rom), rom))
 
     def rom_close(self):
         check_rc(self.handle.CoreDoCommand(Command.ROM_CLOSE, 0, ffi.NULL))
+
+    def attach_plugin(self, plugin: "Plugin"):
+        check_rc(self.handle.CoreAttachPlugin(plugin.version.plugin_type, plugin.handle_raw))
+        self.plugins[plugin.version.plugin_type] = plugin
+
+    def detach_plugin(self, plugin_type: PluginType):
+        check_rc(self.handle.CoreDetachPlugin(plugin_type))
+        if plugin_type in self.plugins:
+            del self.plugins[plugin_type]
+
+    def detach_plugins(self):
+        attached_plugins = list(reversed(self.plugins.keys()))
+        for plugin_type in attached_plugins:
+            self.detach_plugin(plugin_type)
+
+    def auto_attach_plugins(self, overrides=None):
+        section = ffi.new("m64p_handle *")
+        check_rc(self.handle.ConfigOpenSection(b"UI-Console", section))
+        static_string = ffi.new("char[1024]")
+
+        rc = self.handle.ConfigGetParameter(section[0], b"PluginDir", Type.STRING, static_string, 1024)
+        if rc == Error.SUCCESS:
+            plugin_dir = str(ffi.string(static_string), encoding="utf8")
+        elif rc == Error.INPUT_INVALID:
+            plugin_dir = ""
+        else:
+            check_rc(rc)
+
+        def get_plugin(plugin_name):
+            rc = self.handle.ConfigGetParameter(section[0], bytes(plugin_name, encoding="latin1"), Type.STRING, static_string, 1024)
+            if rc == Error.SUCCESS:
+                plugin_path = os.path.abspath(os.path.join(plugin_dir, str(ffi.string(static_string), encoding="utf8")))
+            elif rc == Error.INPUT_INVALID:
+                plugin_path = ""
+            else:
+                check_rc(rc)
+
+            if plugin_path != "":
+                logger.info("Attaching {} {}".format(plugin_name, plugin_path))
+                return Plugin(self, dl=plugin_path)
+            else:
+                logger.warning("Could not find {0} in UI-Console section of config, not attaching {0}".format(plugin_name))
+
+        plugins = [get_plugin(n) for n in ["VideoPlugin", "AudioPlugin", "InputPlugin", "RspPlugin"]]
+        for plugin in plugins:
+            self.attach_plugin(plugin)
+
+    def execute(self):
+        check_rc(self.handle.CoreDoCommand(Command.EXECUTE, 0, ffi.NULL))
+
+    def stop(self):
+        check_rc(self.handle.CoreDoCommand(Command.STOP, 0, ffi.NULL))
 
 class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
