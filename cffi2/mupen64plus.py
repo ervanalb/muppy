@@ -1,5 +1,5 @@
 from cffi import FFI
-from enum import Enum, Flag
+from enum import IntEnum, IntFlag
 from collections import namedtuple
 from typing import Optional
 import ctypes, ctypes.util
@@ -44,10 +44,11 @@ def check_rc(rc):
 
 ## Enums
 
-PluginType = gen_enum(Enum, "PluginType", "M64PLUGIN_")
-CoreCaps = gen_enum(Flag, "CoreCaps", "M64CAPS_")
-CoreParam = gen_enum(Enum, "CoreParam", "M64CORE_")
-MsgLevel = gen_enum(Enum, "MsgLevel", "M64MSG_")
+PluginType = gen_enum(IntEnum, "PluginType", "M64PLUGIN_")
+CoreCaps = gen_enum(IntFlag, "CoreCaps", "M64CAPS_")
+CoreParam = gen_enum(IntEnum, "CoreParam", "M64CORE_")
+MsgLevel = gen_enum(IntEnum, "MsgLevel", "M64MSG_")
+Command = gen_enum(IntEnum, "Command", "M64CMD_")
 
 # Named tuples (for return values)
 
@@ -61,9 +62,11 @@ class DynamicLibrary:
         self.dl = self.DL if dl is None else dl
         self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
         self.handle = ffi.dlopen(self.handle_raw)
+        self.ptr = ffi.new_handle(self)
 
     def __del__(self):
-        self.close()
+        pass
+        #self.close()
 
     def __enter__(self):
         return self
@@ -86,6 +89,14 @@ class DynamicLibrary:
         check_rc(self.handle.PluginGetVersion(plugin_type, plugin_version, api_version, plugin_name, capabilities))
         return Version(PluginType(plugin_type[0]), plugin_version[0], api_version[0], str(ffi.string(plugin_name[0]), encoding="utf8"), CoreCaps(capabilities[0]))
 
+@ffi.callback("ptr_StateCallback")
+def _state_callback(ctx, param_type, new_value):
+    ffi.from_handle(ctx).state_callback(CoreParam(param_type), new_value)
+
+@ffi.callback("ptr_DebugCallback")
+def _debug_callback(ctx, level, message):
+    ffi.from_handle(ctx).debug_callback(MsgLevel(level), str(ffi.string(message), encoding="utf8"))
+
 class Core(DynamicLibrary):
     DL = "libmupen64plus.so"
 
@@ -96,21 +107,13 @@ class Core(DynamicLibrary):
         config_path = ffi.NULL if config_path is None else ffi.new("char[]", bytes(config_path, encoding="utf8"))
         data_path = ffi.NULL if data_path is None else ffi.new("char[]", bytes(data_path, encoding="utf8"))
 
-        @ffi.callback("ptr_StateCallback")
-        def _state_callback(_, param_type, new_value):
-            self.state_callback(CoreParam(param_type), new_value)
-
-        @ffi.callback("ptr_DebugCallback")
-        def _debug_callback(_, level, message):
-            self.debug_callback(MsgLevel(level), str(ffi.string(message), encoding="utf8"))
-
         check_rc(self.handle.CoreStartup(
             CORE_API_VERSION,
             config_path,
             data_path,
-            ffi.NULL,
+            self.ptr,
             _debug_callback,
-            ffi.NULL,
+            self.ptr,
             _state_callback,
         ))
 
@@ -128,19 +131,21 @@ class Core(DynamicLibrary):
     def debug_callback(self, level, message):
         print(level, message)
 
+    def rom_open(self, rom: bytes):
+        check_rc(self.handle.CoreDoCommand(Command.ROM_OPEN, len(rom), rom))
+
+    def rom_close(self):
+        check_rc(self.handle.CoreDoCommand(Command.ROM_CLOSE, 0, ffi.NULL))
+
 class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
         self.open = False
         super().__init__(dl=dl)
         self.core = core
 
-        @ffi.callback("ptr_DebugCallback")
-        def _debug_callback(_, level, message):
-            self.core.debug_callback(MsgLevel(level), str(ffi.string(message), encoding="utf8"))
-
         check_rc(self.handle.PluginStartup(
             self.core.handle_raw,
-            ffi.NULL,
+            self.core.ptr,
             _debug_callback,
         ))
 
