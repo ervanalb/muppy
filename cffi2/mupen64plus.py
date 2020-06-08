@@ -2,6 +2,7 @@ from cffi import FFI
 from enum import Enum, Flag
 from collections import namedtuple
 from typing import Optional
+import ctypes, ctypes.util
 
 CORE_API_VERSION = 0x20001
 
@@ -11,7 +12,7 @@ with open("cdefs.h") as f:
     ffi.cdef(f.read())
 
 # Note: this might not work on Windows, but dlopen on any library will do.
-C = ffi.dlopen(None)
+C = ffi.dlopen(ctypes.util.find_library('c'))
 
 class Mupen64PlusError(Exception):
     pass
@@ -55,8 +56,14 @@ Version = namedtuple("Version", ("plugin_type", "plugin_version", "api_version",
 # Functions
 
 class DynamicLibrary:
-    def __init__(self):
-        self.handle = ffi.dlopen(self.DL)
+    def __init__(self, dl=None):
+        self.handle = None
+        self.dl = self.DL if dl is None else dl
+        self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
+        self.handle = ffi.dlopen(self.handle_raw)
+
+    def __del__(self):
+        self.close()
 
     def __enter__(self):
         return self
@@ -82,8 +89,9 @@ class DynamicLibrary:
 class Core(DynamicLibrary):
     DL = "libmupen64plus.so"
 
-    def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None):
-        super().__init__()
+    def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None, dl: Optional[str]=None):
+        self.open = False
+        super().__init__(dl=dl)
 
         config_path = ffi.NULL if config_path is None else ffi.new("char[]", bytes(config_path, encoding="utf8"))
         data_path = ffi.NULL if data_path is None else ffi.new("char[]", bytes(data_path, encoding="utf8"))
@@ -110,12 +118,36 @@ class Core(DynamicLibrary):
 
     def close(self):
         if self.open:
-            check_rc(c.CoreShutdown())
+            check_rc(self.handle.CoreShutdown())
             self.open = False
-        super.close()
+        super().close()
 
     def state_callback(self, param_type, new_value):
         pass
 
     def debug_callback(self, level, message):
         print(level, message)
+
+class Plugin(DynamicLibrary):
+    def __init__(self, core: Core, dl: Optional[str]=None):
+        self.open = False
+        super().__init__(dl=dl)
+        self.core = core
+
+        @ffi.callback("ptr_DebugCallback")
+        def _debug_callback(_, level, message):
+            self.core.debug_callback(MsgLevel(level), str(ffi.string(message), encoding="utf8"))
+
+        check_rc(self.handle.PluginStartup(
+            self.core.handle_raw,
+            ffi.NULL,
+            _debug_callback,
+        ))
+
+        self.open = True
+
+    def close(self):
+        if self.open:
+            check_rc(self.handle.PluginShutdown())
+            self.open = False
+        super().close()
