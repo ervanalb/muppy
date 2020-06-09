@@ -5,13 +5,13 @@ from typing import Optional
 import ctypes, ctypes.util
 import logging
 import os
+import pkgutil
 
 CORE_API_VERSION = 0x20001
 
 ffi = FFI()
 
-with open("cdefs.h") as f:
-    ffi.cdef(f.read())
+ffi.cdef(str(pkgutil.get_data(__name__, "cdefs.h"), encoding="utf8"))
 
 # Note: this might not work on Windows, but dlopen on any library will do.
 C = ffi.dlopen(ctypes.util.find_library('c'))
@@ -134,7 +134,7 @@ class Core(DynamicLibrary):
             _state_callback,
         ))
 
-        self.plugins = {}
+        self.plugins = []
         self.open = True
 
     def close(self):
@@ -158,17 +158,18 @@ class Core(DynamicLibrary):
 
     def attach_plugin(self, plugin: "Plugin"):
         check_rc(self.handle.CoreAttachPlugin(plugin.version.plugin_type, plugin.handle_raw))
-        self.plugins[plugin.version.plugin_type] = plugin
+        self.plugins.append(plugin)
 
-    def detach_plugin(self, plugin_type: PluginType):
-        check_rc(self.handle.CoreDetachPlugin(plugin_type))
-        if plugin_type in self.plugins:
-            del self.plugins[plugin_type]
+    def detach_plugin(self, plugin: "Plugin"):
+        if plugin not in self.plugins:
+            raise ValueError("Plugin not attached")
+        check_rc(self.handle.CoreDetachPlugin(plugin.version.plugin_type))
+        self.plugins.remove(plugin)
 
     def detach_plugins(self):
-        attached_plugins = list(reversed(self.plugins.keys()))
-        for plugin_type in attached_plugins:
-            self.detach_plugin(plugin_type)
+        attached_plugins = list(reversed(self.plugins))
+        for plugin in attached_plugins:
+            self.detach_plugin(plugin)
 
     def auto_attach_plugins(self, overrides=None):
         section = ffi.new("m64p_handle *")
