@@ -5,13 +5,14 @@ from typing import Optional
 import ctypes, ctypes.util
 import logging
 import os
-import pkgutil
+import pkg_resources
 
 CORE_API_VERSION = 0x20001
 
 ffi = FFI()
 
-ffi.cdef(str(pkgutil.get_data(__name__, "cdefs.h"), encoding="utf8"))
+ffi.cdef(str(pkg_resources.resource_string(__name__, "cdefs.h"), encoding="utf8"))
+ffi.cdef("void *handle;") # for Python plugins
 
 # Note: this might not work on Windows, but dlopen on any library will do.
 C = ffi.dlopen(ctypes.util.find_library('c'))
@@ -73,13 +74,15 @@ def check_rc(rc):
 # Functions
 
 class DynamicLibrary:
+    LOADER=ctypes.CDLL
+
     def __init__(self, dl=None):
+        print("Loader is", self.LOADER)
         self.handle = None
         self.dl = self.DL if dl is None else dl
-        self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
+        self.handle_raw = ffi.cast("void *", self.LOADER(self.dl)._handle)
         self.handle = ffi.dlopen(self.handle_raw)
         self.ptr = ffi.new_handle(self)
-        self.version = self.plugin_get_version()
 
     def __del__(self):
         pass
@@ -120,6 +123,7 @@ class Core(DynamicLibrary):
     def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None, dl: Optional[str]=None):
         self.open = False
         super().__init__(dl=dl)
+        self.version = self.plugin_get_version()
 
         config_path = ffi.NULL if config_path is None else ffi.new("char[]", bytes(config_path, encoding="utf8"))
         data_path = ffi.NULL if data_path is None else ffi.new("char[]", bytes(data_path, encoding="utf8"))
@@ -171,7 +175,7 @@ class Core(DynamicLibrary):
         for plugin in attached_plugins:
             self.detach_plugin(plugin)
 
-    def auto_attach_plugins(self, overrides=None):
+    def auto_attach_plugins(self, video_plugin=None, audio_plugin=None, input_plugin=None, rsp_plugin=None):
         section = ffi.new("m64p_handle *")
         check_rc(self.handle.ConfigOpenSection(b"UI-Console", section))
         static_string = ffi.new("char[1024]")
@@ -184,7 +188,22 @@ class Core(DynamicLibrary):
         else:
             check_rc(rc)
 
+        overrides = {
+            "VideoPlugin": video_plugin,
+            "AudioPlugin": audio_plugin,
+            "InputPlugin": input_plugin,
+            "RspPlugin": rsp_plugin,
+        }
+
         def get_plugin(plugin_name):
+            custom = overrides.get(plugin_name)
+            if custom != None:
+                if isinstance(custom, str):
+                    plugin_path = os.path.abspath(os.path.join(plugin_dir, custom))
+                    return Plugin(self, dl=plugin_path)
+                else:
+                    return custom
+
             rc = self.handle.ConfigGetParameter(section[0], bytes(plugin_name, encoding="latin1"), Type.STRING, static_string, 1024)
             if rc == Error.SUCCESS:
                 plugin_path = os.path.abspath(os.path.join(plugin_dir, str(ffi.string(static_string), encoding="utf8")))
@@ -213,6 +232,7 @@ class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
         self.open = False
         super().__init__(dl=dl)
+        self.version = self.plugin_get_version()
         self.core = core
 
         check_rc(self.handle.PluginStartup(
@@ -228,3 +248,22 @@ class Plugin(DynamicLibrary):
             check_rc(self.handle.PluginShutdown())
             self.open = False
         super().close()
+
+class InputPlugin(Plugin):
+    LOADER=ctypes.PyDLL
+    DL=pkg_resources.resource_filename(__name__, "mupen64plus-input-python.so")
+
+    def __init__(self, core: Core, dl: Optional[str]=None):
+        self.open = False
+        DynamicLibrary.__init__(self)
+        self.core = core
+        self.handle.handle = ffi.cast("void *", id(self)) # XXX using id to get a pointer seems sketchy
+
+        check_rc(self.handle.PluginStartup(
+            self.core.handle_raw,
+            self.core.ptr,
+            _debug_callback,
+        ))
+
+        self.version = self.plugin_get_version()
+        self.open = True
