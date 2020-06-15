@@ -1,15 +1,17 @@
 import logging
-import mupen64plus
+import muppy
 
 logging.basicConfig(level=logging.INFO)
 
-core = mupen64plus.Core()
+core = muppy.Core()
 print(core.version)
 
-rom = open("/home/eric/sm64/baserom.jp.z64", "rb").read()
+rom = open("/home/eric/sm64.jp.z64", "rb").read()
 core.rom_open(rom)
 
-core.auto_attach_plugins()
+p = muppy.InputPlugin(core)
+
+core.auto_attach_plugins(input_plugin=muppy.InputPlugin)
 
 core.execute()
 

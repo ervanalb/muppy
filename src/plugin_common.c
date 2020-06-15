@@ -1,8 +1,13 @@
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
 #define M64P_PLUGIN_PROTOTYPES 1
+#include "mupen64plus/m64p_common.h"
+#include "mupen64plus/m64p_frontend.h"
 #include "mupen64plus/m64p_plugin.h"
 #include "mupen64plus/m64p_types.h"
 
-const int API_VERSION 0x20001
+const int API_VERSION = 0x020100;
 extern const m64p_plugin_type PLUGIN_TYPE; // Populated from each plugin
 
 // Populated from Python
@@ -16,8 +21,12 @@ static PyObject *plugin_name_obj; // Handles memory for plugin_name
 static int plugin_version;
 
 static m64p_error check_initialized() {
-    if (handle == NULL) {
-        debug_callback(debug_context, M64MSG_ERROR, "Attempting to use Python plugin from outside of Python");
+    if (handle == NULL || !Py_IsInitialized()) {
+        if (debug_callback != NULL) {
+            debug_callback(debug_context, M64MSG_ERROR, "Attempting to use Python plugin from outside of Python");
+        } else {
+            fprintf(stderr, "Attempting to use Python plugin from outside of Python\n");
+        }
         return M64ERR_INCOMPATIBLE;
     } else {
         return M64ERR_SUCCESS;
@@ -36,7 +45,7 @@ static m64p_error py_callback_no_args(const char *function_name) {
                 return M64ERR_INTERNAL;
             }
         } else {
-            return M64ERR_MEMORY;
+            return M64ERR_NO_MEMORY;
         }
     } else {
         debug_callback(debug_context, M64MSG_ERROR, "Could not find method");
@@ -46,74 +55,92 @@ static m64p_error py_callback_no_args(const char *function_name) {
     return M64ERR_SUCCESS;
 }
 
-static char* get_bytes() {
-}
-
 m64p_error PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context, void (*DebugCallback)(void *Context, int level, const char *Message)) {
     (void)CoreLibHandle;
+
+    m64p_error rc = M64ERR_SUCCESS;
+
+    PyGILState_STATE gil = PyGILState_Ensure();
 
     debug_context = Context;
     debug_callback = DebugCallback;
 
+    Py_INCREF(handle);
+
     if (debug_callback == NULL) {
-        return M64ERR_INPUT_ASSERT;
+        rc = M64ERR_INPUT_ASSERT;
+        goto done;
     }
 
-    m64p_error rc = check_initialized();
+    rc = check_initialized();
     if (rc != M64ERR_SUCCESS) {
-        return rc;
+        goto done;
     }
 
     PyObject *obj = PyObject_GetAttrString(handle, "plugin_name");
     if (obj != NULL) {
         if (PyUnicode_Check(obj)) {
-            plugin_name_obj = PyUnicode_AsEncodedString(result, "utf8", "strict"); // Owned reference
+            plugin_name_obj = PyUnicode_AsEncodedString(obj, "utf8", "strict"); // Owned reference
             if (plugin_name_obj != NULL) {
-                plugin_name = PyBytes_AS_STRING(temp_bytes);
+                plugin_name = PyBytes_AS_STRING(plugin_name_obj);
             } else {
                 debug_callback(debug_context, M64MSG_ERROR, "Could not encode plugin_name");
-                return M64ERR_INTERNAL;
+                rc = M64ERR_INTERNAL;
+                goto done;
             }
         } else {
             debug_callback(debug_context, M64MSG_ERROR, "plugin_name is not a string");
-            return M64ERR_INTERNAL;
+            rc = M64ERR_INTERNAL;
+            goto done;
         }
     } else {
         debug_callback(debug_context, M64MSG_ERROR, "Could not find plugin_name");
-        return M64ERR_INTERNAL;
+        rc = M64ERR_INTERNAL;
+        goto done;
     }
 
-    PyObject *obj = PyObject_GetAttrString(handle, "plugin_version");
+    obj = PyObject_GetAttrString(handle, "plugin_version");
     if (obj != NULL) {
         plugin_version = PyLong_AsLong(obj);
         if (PyErr_Occurred()) {
             PyErr_Print();
-            return M64ERR_INTERNAL;
+            rc = M64ERR_INTERNAL;
+            goto done;
         }
     } else {
         debug_callback(debug_context, M64MSG_ERROR, "Could not find plugin_version");
-        return M64ERR_INTERNAL;
+        rc = M64ERR_INTERNAL;
+        goto done;
     }
 
-    return py_callback_no_args("plugin_startup");
+done:
+    PyGILState_Release(gil);
+    return rc;
 }
 
 m64p_error PluginShutdown(void) {
+    m64p_error rc = M64ERR_SUCCESS;
+    PyGILState_STATE gil = PyGILState_Ensure();
+
     Py_XDECREF(plugin_name_obj);
     plugin_name_obj = NULL;
 
-    m64p_error rc = check_initialized();
+    Py_XDECREF(handle);
+    handle = NULL;
+
+    rc = check_initialized();
     if (rc != M64ERR_SUCCESS) {
-        return rc;
+        goto done;
     }
 
-    rc = py_callback_no_args("plugin_shutdown");
-
+done:
+    PyGILState_Release(gil);
     return rc;
 }
 
 m64p_error PluginGetVersion(m64p_plugin_type *PluginType, int *PluginVersion, int *APIVersion, const char **PluginNamePtr, int *Capabilities) {
     m64p_error rc = check_initialized();
+
     if (rc != M64ERR_SUCCESS) {
         return rc;
     }
@@ -123,7 +150,7 @@ m64p_error PluginGetVersion(m64p_plugin_type *PluginType, int *PluginVersion, in
     }
 
     if (PluginVersion != NULL) {
-        *PluginVersion = py_plugin_version;
+        *PluginVersion = plugin_version;
     }
 
     if (APIVersion != NULL) {

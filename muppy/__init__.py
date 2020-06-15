@@ -6,6 +6,7 @@ import ctypes, ctypes.util
 import logging
 import os
 import pkg_resources
+import inspect
 
 CORE_API_VERSION = 0x20001
 
@@ -74,13 +75,10 @@ def check_rc(rc):
 # Functions
 
 class DynamicLibrary:
-    LOADER=ctypes.CDLL
-
     def __init__(self, dl=None):
-        print("Loader is", self.LOADER)
         self.handle = None
         self.dl = self.DL if dl is None else dl
-        self.handle_raw = ffi.cast("void *", self.LOADER(self.dl)._handle)
+        self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
         self.handle = ffi.dlopen(self.handle_raw)
         self.ptr = ffi.new_handle(self)
 
@@ -123,7 +121,6 @@ class Core(DynamicLibrary):
     def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None, dl: Optional[str]=None):
         self.open = False
         super().__init__(dl=dl)
-        self.version = self.plugin_get_version()
 
         config_path = ffi.NULL if config_path is None else ffi.new("char[]", bytes(config_path, encoding="utf8"))
         data_path = ffi.NULL if data_path is None else ffi.new("char[]", bytes(data_path, encoding="utf8"))
@@ -140,6 +137,7 @@ class Core(DynamicLibrary):
 
         self.plugins = []
         self.open = True
+        self.version = self.plugin_get_version()
 
     def close(self):
         if self.open:
@@ -197,10 +195,12 @@ class Core(DynamicLibrary):
 
         def get_plugin(plugin_name):
             custom = overrides.get(plugin_name)
-            if custom != None:
+            if custom is not None:
                 if isinstance(custom, str):
                     plugin_path = os.path.abspath(os.path.join(plugin_dir, custom))
                     return Plugin(self, dl=plugin_path)
+                elif inspect.isclass(custom):
+                    return custom(self)
                 else:
                     return custom
 
@@ -222,6 +222,8 @@ class Core(DynamicLibrary):
         for plugin in plugins:
             self.attach_plugin(plugin)
 
+        self.video_plugin, self.audio_plugin, self.input_plugin, self.rsp_plugin = plugins
+
     def execute(self):
         check_rc(self.handle.CoreDoCommand(Command.EXECUTE, 0, ffi.NULL))
 
@@ -232,7 +234,6 @@ class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
         self.open = False
         super().__init__(dl=dl)
-        self.version = self.plugin_get_version()
         self.core = core
 
         check_rc(self.handle.PluginStartup(
@@ -242,6 +243,7 @@ class Plugin(DynamicLibrary):
         ))
 
         self.open = True
+        self.version = self.plugin_get_version()
 
     def close(self):
         if self.open:
@@ -249,9 +251,10 @@ class Plugin(DynamicLibrary):
             self.open = False
         super().close()
 
-class InputPlugin(Plugin):
-    LOADER=ctypes.PyDLL
-    DL=pkg_resources.resource_filename(__name__, "mupen64plus-input-python.so")
+class PythonPlugin(Plugin):
+    # Override me!
+    plugin_name = "Custom Python Plugin"
+    plugin_version = 0x000001
 
     def __init__(self, core: Core, dl: Optional[str]=None):
         self.open = False
@@ -265,5 +268,25 @@ class InputPlugin(Plugin):
             _debug_callback,
         ))
 
-        self.version = self.plugin_get_version()
         self.open = True
+        self.version = self.plugin_get_version()
+        self.plugin_startup()
+
+    def close(self):
+        if self.open:
+            self.plugin_shutdown()
+            check_rc(self.handle.PluginShutdown())
+            self.open = False
+        super().close()
+
+    # Override me!
+    def plugin_startup(self):
+        pass
+
+    # Override me!
+    def plugin_shutdown(self):
+        pass
+
+class InputPlugin(PythonPlugin):
+    DL = pkg_resources.resource_filename(__name__, "mupen64plus-input-python.so")
+    plugin_name = "Custom Python Input Plugin"
