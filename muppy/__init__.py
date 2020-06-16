@@ -1,7 +1,7 @@
 from cffi import FFI
 from enum import IntEnum, IntFlag
 from collections import namedtuple
-from typing import Optional, List
+from typing import Optional, List, Any
 import ctypes, ctypes.util
 import logging
 import os
@@ -34,6 +34,7 @@ CoreParam = gen_enum(IntEnum, "CoreParam", "M64CORE_")
 MsgLevel = gen_enum(IntEnum, "MsgLevel", "M64MSG_")
 Command = gen_enum(IntEnum, "Command", "M64CMD_")
 Type = gen_enum(IntEnum, "Type", "M64TYPE_")
+EmuState = gen_enum(IntEnum, "EmuState", "M64EMU_")
 
 LOGLEVEL = {
     MsgLevel.ERROR: logging.ERROR,
@@ -140,6 +141,14 @@ class Core(DynamicLibrary):
         self.plugins = []
         self.open = True
         self.version = self.plugin_get_version()
+        self.get_default_plugins()
+
+        self.video_plugin = None
+        self.audio_plugin = None
+        self.input_plugin = None
+        self.rsp_plugin = None
+
+        self.state_callbacks = []
 
     def close(self):
         if self.open:
@@ -147,8 +156,15 @@ class Core(DynamicLibrary):
             self.open = False
         super().close()
 
+    def add_state_callback(self, callback):
+        self.state_callbacks.append(callback)
+
+    def remove_state_callback(self, callback):
+        self.state_callbacks.remove(callback)
+
     def state_callback(self, param_type, new_value):
-        pass
+        for cb in self.state_callbacks:
+            cb(param_type, new_value)
 
     def debug_callback(self, level, message):
         loglvl = LOGLEVEL.get(level, logging.NOTSET)
@@ -161,76 +177,103 @@ class Core(DynamicLibrary):
         check_rc(self.handle.CoreDoCommand(Command.ROM_CLOSE, 0, ffi.NULL))
 
     def attach_plugin(self, plugin: "Plugin"):
-        check_rc(self.handle.CoreAttachPlugin(plugin.version.plugin_type, plugin.handle_raw))
-        self.plugins.append(plugin)
+        for plugin_type in ["video", "audio", "input", "rsp"]:
+            if plugin.version.plugin_type == getattr(PluginType, plugin_type.upper().replace("VIDEO", "GFX")):
+                existing_plugin = getattr(self, plugin_type.lower() + "_plugin")
+                if existing_plugin is not None:
+                    self.detach_plugin(existing_plugin)
+                check_rc(self.handle.CoreAttachPlugin(plugin.version.plugin_type, plugin.handle_raw))
+                setattr(self, plugin_type.lower() + "_plugin", plugin)
+                break
+        else:
+            raise ValueError("Unknown plugin type")
 
     def detach_plugin(self, plugin: "Plugin"):
-        if plugin not in self.plugins:
+        for plugin_type in ["video", "audio", "input", "rsp"]:
+            existing_plugin = getattr(self, plugin_type.lower() + "_plugin")
+            if existing_plugin == plugin:
+                check_rc(self.handle.CoreDetachPlugin(plugin.version.plugin_type))
+                setattr(self, plugin_type.lower() + "_plugin", None)
+                break
+        else: # on for loop
             raise ValueError("Plugin not attached")
-        check_rc(self.handle.CoreDetachPlugin(plugin.version.plugin_type))
-        self.plugins.remove(plugin)
 
     def detach_plugins(self):
-        attached_plugins = list(reversed(self.plugins))
-        for plugin in attached_plugins:
-            self.detach_plugin(plugin)
+        for plugin_type in ["rsp", "input", "audio", "video"]:
+            existing_plugin = getattr(self, plugin_type.lower() + "_plugin")
+            if existing_plugin is not None:
+                self.detach_plugin(existing_plugin)
 
-    def auto_attach_plugins(self, video_plugin=None, audio_plugin=None, input_plugin=None, rsp_plugin=None):
+    def get_default_plugins(self):
         section = ffi.new("m64p_handle *")
         check_rc(self.handle.ConfigOpenSection(b"UI-Console", section))
         static_string = ffi.new("char[1024]")
 
         rc = self.handle.ConfigGetParameter(section[0], b"PluginDir", Type.STRING, static_string, 1024)
         if rc == Error.SUCCESS:
-            plugin_dir = str(ffi.string(static_string), encoding="utf8")
+            self.plugin_dir = str(ffi.string(static_string), encoding="utf8")
         elif rc == Error.INPUT_INVALID:
-            plugin_dir = ""
+            self.plugin_dir = ""
         else:
             check_rc(rc)
 
-        overrides = {
-            "VideoPlugin": video_plugin,
-            "AudioPlugin": audio_plugin,
-            "InputPlugin": input_plugin,
-            "RspPlugin": rsp_plugin,
-        }
-
         def get_plugin(plugin_name):
-            custom = overrides.get(plugin_name)
-            if custom is not None:
-                if isinstance(custom, str):
-                    plugin_path = os.path.abspath(os.path.join(plugin_dir, custom))
-                    return Plugin(self, dl=plugin_path)
-                elif inspect.isclass(custom):
-                    return custom(self)
-                else:
-                    return custom
-
             rc = self.handle.ConfigGetParameter(section[0], bytes(plugin_name, encoding="latin1"), Type.STRING, static_string, 1024)
             if rc == Error.SUCCESS:
-                plugin_path = os.path.abspath(os.path.join(plugin_dir, str(ffi.string(static_string), encoding="utf8")))
+                return os.path.abspath(os.path.join(self.plugin_dir, str(ffi.string(static_string), encoding="utf8")))
             elif rc == Error.INPUT_INVALID:
-                plugin_path = ""
+                return None
             else:
                 check_rc(rc)
+            assert False
 
-            if plugin_path != "":
-                logger.info("Attaching {} {}".format(plugin_name, plugin_path))
-                return Plugin(self, dl=plugin_path)
-            else:
-                logger.warning("Could not find {0} in UI-Console section of config, not attaching {0}".format(plugin_name))
+        self.default_video_plugin = get_plugin("VideoPlugin")
+        self.default_audio_plugin = get_plugin("AudioPlugin")
+        self.default_input_plugin = get_plugin("InputPlugin")
+        self.default_rsp_plugin = get_plugin("RspPlugin")
 
-        plugins = [get_plugin(n) for n in ["VideoPlugin", "AudioPlugin", "InputPlugin", "RspPlugin"]]
+    def auto_attach_plugins(self, video_plugin=None, audio_plugin=None, input_plugin=None, rsp_plugin=None):
+        video_plugin = Plugin.make(self, video_plugin or self.default_video_plugin)
+        audio_plugin = Plugin.make(self, audio_plugin or self.default_audio_plugin)
+        input_plugin = Plugin.make(self, input_plugin or self.default_input_plugin)
+        rsp_plugin   = Plugin.make(self, rsp_plugin or self.default_rsp_plugin)
+
+        if self.video_plugin is None:
+            logger.warn("No video plugin")
+        if self.audio_plugin is None:
+            logger.warn("No audio plugin")
+        if self.input_plugin is None:
+            logger.warn("No input plugin")
+        if self.rsp_plugin is None:
+            logger.warn("No RSP plugin")
+
+        plugins = [p for p in [
+            video_plugin,
+            audio_plugin,
+            input_plugin,
+            rsp_plugin,
+        ] if p is not None]
+
         for plugin in plugins:
             self.attach_plugin(plugin)
-
-        self.video_plugin, self.audio_plugin, self.input_plugin, self.rsp_plugin = plugins
 
     def execute(self):
         check_rc(self.handle.CoreDoCommand(Command.EXECUTE, 0, ffi.NULL))
 
     def stop(self):
         check_rc(self.handle.CoreDoCommand(Command.STOP, 0, ffi.NULL))
+
+    def pause(self):
+        check_rc(self.handle.CoreDoCommand(Command.PAUSE, 0, ffi.NULL))
+
+    def resume(self):
+        check_rc(self.handle.CoreDoCommand(Command.RESUME, 0, ffi.NULL))
+
+    def state_save(self, filename=None):
+        check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, bytes(filename, encoding="utf8")))
+
+    def state_load(self, filename=None):
+        check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, bytes(filename, encoding="utf8")))
 
 class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
@@ -252,6 +295,18 @@ class Plugin(DynamicLibrary):
             check_rc(self.handle.PluginShutdown())
             self.open = False
         super().close()
+
+    @classmethod
+    def make(self, core: Core, plugin: Any):
+        if plugin is None:
+            return None
+        elif isinstance(plugin, str):
+            plugin_path = os.path.abspath(os.path.join(core.plugin_dir, plugin))
+            return Plugin(core, dl=plugin_path)
+        elif inspect.isclass(plugin):
+            return plugin(core)
+        else:
+            return plugin
 
 class PythonPlugin(Plugin):
     # Override me!
