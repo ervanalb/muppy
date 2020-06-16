@@ -33,28 +33,6 @@ static m64p_error check_initialized() {
     }
 }
 
-static m64p_error py_callback_no_args(const char *function_name) {
-    PyObject *obj = PyObject_GetAttrString(handle, function_name);
-    if (obj != NULL) {
-        PyObject *tup = PyTuple_New(0);
-        if (tup != NULL) {
-            PyObject_Call(obj, tup, NULL);
-            Py_DECREF(tup);
-            if (PyErr_Occurred()) {
-                PyErr_Print();
-                return M64ERR_INTERNAL;
-            }
-        } else {
-            return M64ERR_NO_MEMORY;
-        }
-    } else {
-        debug_callback(debug_context, M64MSG_ERROR, "Could not find method");
-        debug_callback(debug_context, M64MSG_ERROR, function_name);
-        return M64ERR_INTERNAL;
-    }
-    return M64ERR_SUCCESS;
-}
-
 m64p_error PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context, void (*DebugCallback)(void *Context, int level, const char *Message)) {
     (void)CoreLibHandle;
 
@@ -114,6 +92,7 @@ m64p_error PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context, void (
     }
 
 done:
+    PyErr_Clear();
     PyGILState_Release(gil);
     return rc;
 }
@@ -134,6 +113,7 @@ m64p_error PluginShutdown(void) {
     }
 
 done:
+    PyErr_Clear();
     PyGILState_Release(gil);
     return rc;
 }

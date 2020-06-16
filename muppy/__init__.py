@@ -1,7 +1,7 @@
 from cffi import FFI
 from enum import IntEnum, IntFlag
 from collections import namedtuple
-from typing import Optional
+from typing import Optional, List
 import ctypes, ctypes.util
 import logging
 import os
@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 # Named tuples (for return values)
 
 Version = namedtuple("Version", ("plugin_type", "plugin_version", "api_version", "plugin_name", "capabilities"))
+
+ControllerInfo = namedtuple("ControllerInfo", ("present", "raw_data", "plugin"))
 
 # Util
 
@@ -290,3 +292,9 @@ class PythonPlugin(Plugin):
 class InputPlugin(PythonPlugin):
     DL = pkg_resources.resource_filename(__name__, "mupen64plus-input-python.so")
     plugin_name = "Custom Python Input Plugin"
+
+    def get_keys(self, controller: int) -> (int, int, int):
+        return (0, 0, 0)
+
+    def initiate_controllers(self) -> List[ControllerInfo]:
+        return [ControllerInfo(present=False, raw_data=False, plugin=False)] * 4
