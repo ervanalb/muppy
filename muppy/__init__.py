@@ -7,6 +7,7 @@ import logging
 import os
 import pkg_resources
 import inspect
+import functools
 
 CORE_API_VERSION = 0x20001
 
@@ -35,6 +36,7 @@ MsgLevel = gen_enum(IntEnum, "MsgLevel", "M64MSG_")
 Command = gen_enum(IntEnum, "Command", "M64CMD_")
 Type = gen_enum(IntEnum, "Type", "M64TYPE_")
 EmuState = gen_enum(IntEnum, "EmuState", "M64EMU_")
+DbgRunState = gen_enum(IntEnum, "DbgRunState", "M64P_DBG_RUNSTATE_")
 
 LOGLEVEL = {
     MsgLevel.ERROR: logging.ERROR,
@@ -74,6 +76,16 @@ def check_rc(rc):
         Error.UNSUPPORTED: Mupen64PlusError("Unsupported"),
         Error.WRONG_TYPE: Mupen64PlusError("Wrong type"),
     }.get(rc, Mupen64PlusError("Unknown return code"))
+
+def requires_debugger(f):
+    @functools.wraps(f)
+    def _wrapper(self, *args, **kwargs):
+        if not self.version.capabilities & CoreCaps.DEBUGGER:
+            raise Mupen64PlusError("Core does not have debugger capability")
+        if not self.debugger:
+            raise Mupen64PlusError("Debugger not enabled")
+        return f(self, *args, **kwargs)
+    return _wrapper
 
 # Functions
 
@@ -121,7 +133,7 @@ def _debug_callback(ctx, level, message):
 class Core(DynamicLibrary):
     DL = "libmupen64plus.so"
 
-    def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None, dl: Optional[str]=None):
+    def __init__(self, config_path: Optional[str]=None, data_path: Optional[str]=None, dl: Optional[str]=None, debugger=False):
         self.open = False
         super().__init__(dl=dl)
 
@@ -150,6 +162,39 @@ class Core(DynamicLibrary):
 
         self.state_callbacks = []
 
+        self.debugger = debugger
+        if debugger:
+            self.init_debugger()
+        self.config_debugger(debugger)
+
+    def config_debugger(self, value):
+        section = ffi.new("m64p_handle *")
+        check_rc(self.handle.ConfigOpenSection(b"Core", section))
+        value = ffi.new("int *", self.debugger)
+        self.handle.ConfigSetParameter(section, b"EnableDebugger", Type.BOOL, value)
+
+    @requires_debugger
+    def init_debugger(self):
+        @ffi.callback("void ()")
+        def _dbg_frontend_init():
+            self.dbg_init_callback()
+        self._dbg_frontend_init = _dbg_frontend_init
+
+        @ffi.callback("void (unsigned int)")
+        def _dbg_frontend_update(pc):
+            self.dbg_update_callback(pc)
+        self._dbg_frontend_update = _dbg_frontend_update
+
+        @ffi.callback("void ()")
+        def _dbg_frontend_vi():
+            self.dbg_vi_callback()
+        self._dbg_frontend_vi = _dbg_frontend_vi
+
+        check_rc(self.handle.DebugSetCallbacks(_dbg_frontend_init, _dbg_frontend_update, _dbg_frontend_vi))
+
+        self.dbg_vi_callbacks = []
+        self.dbg_update_callbacks = []
+
     def close(self):
         if self.open:
             check_rc(self.handle.CoreShutdown())
@@ -165,6 +210,17 @@ class Core(DynamicLibrary):
     def state_callback(self, param_type, new_value):
         for cb in self.state_callbacks:
             cb(param_type, new_value)
+
+    def dbg_init_callback(self):
+        logger.info("Debugger initialized")
+
+    def dbg_vi_callback(self):
+        for cb in self.dbg_vi_callbacks:
+            cb()
+
+    def dbg_update_callback(self, pc: int):
+        for cb in self.dbg_update_callbacks:
+            cb(pc)
 
     def debug_callback(self, level, message):
         loglvl = LOGLEVEL.get(level, logging.NOTSET)
@@ -274,6 +330,50 @@ class Core(DynamicLibrary):
 
     def state_load(self, filename=None):
         check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, bytes(filename, encoding="utf8")))
+
+    def state_query(self, param: CoreParam) -> int:
+        value = ffi.new("int *")
+        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value))
+        return value[0]
+
+    def state_set(self, param: CoreParam, value: int) -> None:
+        value_ptr = ffi.new("int *", value)
+        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value_ptr))
+
+    def debug_mem_read_64(self, address: int) -> int:
+        return struct.pack("=L", self.handle.DebugMemRead64(address))
+
+    def debug_mem_read_32(self, address: int) -> int:
+        return struct.pack("=I", self.handle.DebugMemRead32(address))
+
+    def debug_mem_read_16(self, address: int) -> int:
+        return struct.pack("=H", self.handle.DebugMemRead16(address))
+
+    def debug_mem_read_8(self, address: int) -> int:
+        return struct.pack("=B", self.handle.DebugMemRead16(address))
+
+    def debug_mem_write_64(self, address: int, value: bytes) -> None:
+        return self.handle.DebugMemRead64(address, struct.unpack("=L", value)[0])
+
+    @requires_debugger
+    def debug_set_run_state(self, runstate: DbgRunState) -> None:
+        check_rc(self.handle.DebugSetRunState(runstate))
+
+    @requires_debugger
+    def add_dbg_vi_callback(self, callback):
+        self.dbg_vi_callbacks.append(callback)
+
+    @requires_debugger
+    def remove_dbg_vi_callback(self, callback):
+        self.dbg_vi_callbacks.remove(callback)
+
+    @requires_debugger
+    def add_dbg_update_callback(self, callback):
+        self.dbg_update_callbacks.append(callback)
+
+    @requires_debugger
+    def remove_dbg_update_callback(self, callback):
+        self.dbg_update_callbacks.remove(callback)
 
 class Plugin(DynamicLibrary):
     def __init__(self, core: Core, dl: Optional[str]=None):
