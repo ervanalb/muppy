@@ -8,6 +8,7 @@ import os
 import pkg_resources
 import inspect
 import functools
+import struct
 
 CORE_API_VERSION = 0x20001
 
@@ -353,7 +354,16 @@ class Core(DynamicLibrary):
         return struct.pack("=B", self.handle.DebugMemRead16(address))
 
     def debug_mem_write_64(self, address: int, value: bytes) -> None:
-        return self.handle.DebugMemRead64(address, struct.unpack("=L", value)[0])
+        return self.handle.DebugMemWrite64(address, struct.unpack("=L", value)[0])
+
+    def debug_mem_write_32(self, address: int, value: bytes) -> None:
+        return self.handle.DebugMemWrite32(address, struct.unpack("=I", value)[0])
+
+    def debug_mem_write_16(self, address: int, value: bytes) -> None:
+        return self.handle.DebugMemWrite16(address, struct.unpack("=H", value)[0])
+
+    def debug_mem_write_8(self, address: int, value: bytes) -> None:
+        return self.handle.DebugMemWrite8(address, struct.unpack("=B", value)[0])
 
     @requires_debugger
     def debug_set_run_state(self, runstate: DbgRunState) -> None:
