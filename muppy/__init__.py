@@ -9,13 +9,14 @@ import pkg_resources
 import inspect
 import functools
 import struct
+import tempfile
 
 CORE_API_VERSION = 0x20001
 
 ffi = FFI()
 
 ffi.cdef(str(pkg_resources.resource_string(__name__, "cdefs.h"), encoding="utf8"))
-ffi.cdef("void *handle;") # for Python plugins
+ffi.cdef("extern void *handle;") # for Python plugins
 
 # Note: this might not work on Windows, but dlopen on any library will do.
 C = ffi.dlopen(ctypes.util.find_library('c'))
@@ -326,11 +327,34 @@ class Core(DynamicLibrary):
     def resume(self):
         check_rc(self.handle.CoreDoCommand(Command.RESUME, 0, ffi.NULL))
 
-    def state_save(self, filename=None):
-        check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, bytes(filename, encoding="utf8")))
+    def state_save(self, filename: Optional[str]=None):
+        check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
 
-    def state_load(self, filename=None):
-        check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, bytes(filename, encoding="utf8")))
+    def state_save_data(self):
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            filename = tf.name
+        try:
+            self.state_save(filename)
+            while True:
+                with open(filename, "rb") as tf:
+                    result = tf.read()
+                    if result:
+                        return result
+        finally:
+            os.remove(filename)
+
+    def state_load(self, filename: Optional[str]=None):
+        check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
+
+    def state_load_data(self, data: bytes):
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            filename = tf.name
+        try:
+            with open(filename, "wb") as tf:
+                tf.write(data)
+            self.state_load(filename)
+        finally:
+            os.remove(filename)
 
     def state_query(self, param: CoreParam) -> int:
         value = ffi.new("int *")

@@ -107,9 +107,9 @@ class TASPlayer(InputPlugin):
                 self.core.execute()
             elif param_type == CoreParam.EMU_STATE and new_value == EmuState.RUNNING:
                 self.core.remove_state_callback(_cb)
-                self.core.state_load("end_of_tas_savestate")
+                self.core.state_load(self.ss)
         self.core.add_state_callback(_cb)
-        self.core.state_save("end_of_tas_savestate")
+        self.ss = self.core.state_save()
 
     def initiate_controllers(self) -> List[ControllerInfo]:
         return [ControllerInfo(present=p, raw_data=False, plugin=False) for p in self.connected_controllers]
