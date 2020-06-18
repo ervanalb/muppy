@@ -9,6 +9,8 @@ import pkg_resources
 import inspect
 import functools
 import struct
+import asyncio
+import threading
 
 CORE_API_VERSION = 0x20001
 
@@ -334,12 +336,12 @@ class Core(DynamicLibrary):
 
     def state_query(self, param: CoreParam) -> int:
         value = ffi.new("int *")
-        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value))
+        check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_QUERY, param, value))
         return value[0]
 
     def state_set(self, param: CoreParam, value: int) -> None:
         value_ptr = ffi.new("int *", value)
-        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value_ptr))
+        check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_SET, param, value_ptr))
 
     def debug_mem_read_64(self, address: int) -> int:
         return struct.pack("=L", self.handle.DebugMemRead64(address))
@@ -463,3 +465,84 @@ class InputPlugin(PythonPlugin):
 
     def initiate_controllers(self) -> List[ControllerInfo]:
         return [ControllerInfo(present=False, raw_data=False, plugin=False)] * 4
+
+class AsyncCore(Core):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.state_futures = []
+        self.current_state = {}
+        self.loop = asyncio.get_event_loop()
+
+    def future_state(self, param, value=None):
+        f = asyncio.Future()
+        # Check to see if the current state matches the target state
+        if param not in (CoreParam.STATE_SAVECOMPLETE, CoreParam.STATE_LOADCOMPLETE):
+            if param not in self.current_state:
+                self.current_state[param] = self.state_query(param)
+            if self.current_state[param] == value:
+                f.set_result(value)
+
+        # If not, we have to wait for it.
+        if not f.done():
+            self.state_futures.append((param, value, f))
+        return asyncio.ensure_future(f)
+
+    async def a_execute(self):
+        self.execute_thread = threading.Thread(target=self.execute, daemon=True)
+        self.execute_thread.start()
+        await self.future_state(CoreParam.EMU_STATE, EmuState.RUNNING)
+
+    async def a_stop(self):
+        self.stop()
+        await self.future_state(CoreParam.EMU_STATE, EmuState.STOPPED)
+        self.execute_thread.join()
+
+    async def a_pause(self):
+        self.pause()
+        await self.future_state(CoreParam.EMU_STATE, EmuState.PAUSED)
+
+    async def a_resume(self):
+        self.resume()
+        await self.future_state(CoreParam.EMU_STATE, EmuState.RUNNING)
+
+    async def a_state_save(self, filename=None):
+        self.state_save(filename)
+        if not await self.future_state(CoreParam.STATE_SAVECOMPLETE):
+            raise Mupen64PlusError("Failed to save state")
+
+    async def a_state_load(self, filename=None):
+        self.state_load(filename)
+        if not await self.future_state(CoreParam.STATE_LOADCOMPLETE):
+            raise Mupen64PlusError("Failed to load state")
+
+    #@requires_debugger
+    #def a_debug_set_run_state(self, runstate: DbgRunState) -> None:
+    #    check_rc(self.handle.DebugSetRunState(runstate))
+
+    def state_callback(self, param_type, new_value):
+        def _call():
+            # Resolve futures
+            for (param, value, f) in self.state_futures:
+                if param_type == param and (new_value == value or value is None) and not f.done():
+                    f.set_result(new_value)
+            self.state_futures = [(param, value, f) for (param, value, f) in self.state_futures if not f.done()]
+            # Prune
+            for cb in self.state_callbacks:
+                cb(param_type, new_value)
+            # Remember current states
+            self.current_state[param_type] = new_value
+
+        self.loop.call_soon_threadsafe(_call)
+
+    def dbg_vi_callback(self):
+        def _call():
+            for cb in self.dbg_vi_callbacks:
+                cb()
+        self.loop.call_soon_threadsafe(_call)
+
+    def dbg_update_callback(self, pc: int):
+        def _call():
+            for cb in self.dbg_update_callbacks:
+                cb(pc)
+        self.loop.call_soon_threadsafe(_call)
+
