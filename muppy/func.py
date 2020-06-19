@@ -63,8 +63,9 @@ class FuncCore(Core):
         self.inputs = inputs
         self.mem_addrs = mem_addrs
         self.state_load(save_state)
-        self.resume()
         while len(self.inputs) and self.thread.is_alive():
+            if self.state_query(CoreParam.EMU_STATE) == EmuState.PAUSED:
+                self.resume() # The emu sometimes gets stuck on PAUSED
             time.sleep(0.01)
         if not self.thread.is_alive():
             raise RuntimeError("Mupen64plus process interrupted")

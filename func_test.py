@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 def random_actions():
     actions = []
-    for i in range(random.randint(10, 100)):
+    for i in range(random.randint(0, 100)):
         t = random.randrange(240)
         a = random.choice([
             (0x80, None, None), # A
@@ -22,7 +22,7 @@ def random_actions():
     return actions
 
 def merge(actions1, actions2):
-    everything = actions1 + actions2
+    everything = random.sample(actions1, len(actions1) // 2) + random.sample(actions2, len(actions2) // 2)
     if len(everything) > 400:
         return random.sample(everything, 400)
     return everything
@@ -85,14 +85,33 @@ def retrieve_work():
     return outgoing_queue.get()
 
 def main():
-    startup(3)
+    N_WORKERS = 10
+    POP_SIZE = 30
+    SURVIVAL = 10
+    OFFSPRING_RATIO = 0.8 # Sets ratio of offspring to random new members
+
+    startup(N_WORKERS) # Simultaneous workers
     try:
-        for i in range(3):
+        work = []
+        for i in range(POP_SIZE): # Population size
             request_work(random_actions())
 
-        for i in range(3):
-            (actions, result) = retrieve_work()
-            print(result)
+        while True:
+            work.append(retrieve_work())
+
+            # Only remember the top SURVIVAL members
+            work = list(sorted(work, key=lambda x: x[1]))[0:SURVIVAL]
+
+            print([x[1] for x in work])
+            print("Best is:", work[0][0])
+
+            if random.random() < OFFSPRING_RATIO and len(work) > 2:
+                print("Add offspring")
+                offspring = merge(*[x[0] for x in random.sample(work, 2)])
+                request_work(offspring)
+            else:
+                print("Add new random")
+                request_work(random_actions())
 
     finally:
         shutdown()
