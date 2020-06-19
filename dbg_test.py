@@ -18,20 +18,17 @@ ss = None
 def p():
     global n, ss
     print("Frame", n)
-    #print("Mario X:", struct.unpack("f", core.debug_mem_read_32(0x80339E3C))[0])
+    print("Mario X:", struct.unpack("f", core.debug_mem_read_32(0x80339E3C))[0])
     #print("Mario Y:", struct.unpack("f", core.debug_mem_read_32(0x80339E40))[0])
-    #print("Mario Z:", struct.unpack("f", core.debug_mem_read_32(0x80339E44))[0])
-    speed = struct.unpack("f", core.debug_mem_read_32(0x80339E54))[0]
+    print("Mario Z:", struct.unpack("f", core.debug_mem_read_32(0x80339E44))[0])
+    #speed = struct.unpack("f", core.debug_mem_read_32(0x80339E54))[0]
     #print("Mario Speed:", speed)
     # Turn on at your own risk
-    core.debug_mem_write_32(0x80339E54, struct.pack("f", speed * 1.1))
+    #core.debug_mem_write_32(0x80339E54, struct.pack("f", speed * 1.1))
     n += 1
 
-    if n == 1000:
-        ss = core.state_save_data()
-        print(ss)
-    elif n > 1000 and n % 300 == 0:
-        core.state_load_data(ss)
+    #if n > 1000 and n % 300 == 0:
+    #    core.state_load("pu.st3")
 
 def start(pc: int):
     print("UPDATE: PC:", hex(pc))

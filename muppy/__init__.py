@@ -330,40 +330,17 @@ class Core(DynamicLibrary):
     def state_save(self, filename: Optional[str]=None):
         check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
 
-    def state_save_data(self):
-        with tempfile.NamedTemporaryFile(delete=False) as tf:
-            filename = tf.name
-        try:
-            self.state_save(filename)
-            while True:
-                with open(filename, "rb") as tf:
-                    result = tf.read()
-                    if result:
-                        return result
-        finally:
-            os.remove(filename)
-
     def state_load(self, filename: Optional[str]=None):
         check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
 
-    def state_load_data(self, data: bytes):
-        with tempfile.NamedTemporaryFile(delete=False) as tf:
-            filename = tf.name
-        try:
-            with open(filename, "wb") as tf:
-                tf.write(data)
-            self.state_load(filename)
-        finally:
-            os.remove(filename)
-
     def state_query(self, param: CoreParam) -> int:
         value = ffi.new("int *")
-        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value))
+        check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_QUERY, param, value))
         return value[0]
 
     def state_set(self, param: CoreParam, value: int) -> None:
         value_ptr = ffi.new("int *", value)
-        check_rc(self.handle.CoreDoCommand(Command.STATE_QUERY, param, value_ptr))
+        check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_SET, param, value_ptr))
 
     def debug_mem_read_64(self, address: int) -> int:
         return struct.pack("=L", self.handle.DebugMemRead64(address))
