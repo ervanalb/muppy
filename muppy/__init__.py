@@ -13,13 +13,11 @@ import tempfile
 
 CORE_API_VERSION = 0x20001
 
-ffi = FFI()
-
-ffi.cdef(str(pkg_resources.resource_string(__name__, "cdefs.h"), encoding="utf8"))
-ffi.cdef("extern void *handle;") # for Python plugins
+tmpffi = FFI()
+tmpffi.cdef(str(pkg_resources.resource_string(__name__, "cdefs.h"), encoding="utf8"))
 
 # Note: this might not work on Windows, but dlopen on any library will do.
-C = ffi.dlopen(ctypes.util.find_library('c'))
+C = tmpffi.dlopen(ctypes.util.find_library('c'))
 
 class Mupen64PlusError(Exception):
     pass
@@ -95,9 +93,14 @@ class DynamicLibrary:
     def __init__(self, dl=None):
         self.handle = None
         self.dl = self.DL if dl is None else dl
-        self.handle_raw = ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
-        self.handle = ffi.dlopen(self.handle_raw)
-        self.ptr = ffi.new_handle(self)
+
+        self.ffi = FFI()
+        self.ffi.cdef(str(pkg_resources.resource_string(__name__, "cdefs.h"), encoding="utf8"))
+        self.ffi.cdef("extern void *handle;") # for Python plugins
+
+        self.handle_raw = self.ffi.cast("void *", ctypes.CDLL(self.dl)._handle)
+        self.handle = self.ffi.dlopen(self.handle_raw)
+        self.ptr = self.ffi.new_handle(self)
 
     def __del__(self):
         pass
@@ -111,26 +114,18 @@ class DynamicLibrary:
 
     def close(self):
         if self.handle:
-            ffi.dlclose(self.handle)
+            self.ffi.dlclose(self.handle)
             self.handle = None
 
     def plugin_get_version(self):
-        plugin_type = ffi.new("m64p_plugin_type *")
-        plugin_version = ffi.new("int *")
-        api_version = ffi.new("int *")
-        plugin_name = ffi.new("const char **")
-        capabilities = ffi.new("int *")
+        plugin_type = self.ffi.new("m64p_plugin_type *")
+        plugin_version = self.ffi.new("int *")
+        api_version = self.ffi.new("int *")
+        plugin_name = self.ffi.new("const char **")
+        capabilities = self.ffi.new("int *")
     
         check_rc(self.handle.PluginGetVersion(plugin_type, plugin_version, api_version, plugin_name, capabilities))
-        return Version(PluginType(plugin_type[0]), plugin_version[0], api_version[0], str(ffi.string(plugin_name[0]), encoding="utf8"), CoreCaps(capabilities[0]))
-
-@ffi.callback("ptr_StateCallback")
-def _state_callback(ctx, param_type, new_value):
-    ffi.from_handle(ctx).state_callback(CoreParam(param_type), new_value)
-
-@ffi.callback("ptr_DebugCallback")
-def _debug_callback(ctx, level, message):
-    ffi.from_handle(ctx).debug_callback(MsgLevel(level), str(ffi.string(message), encoding="utf8"))
+        return Version(PluginType(plugin_type[0]), plugin_version[0], api_version[0], str(self.ffi.string(plugin_name[0]), encoding="utf8"), CoreCaps(capabilities[0]))
 
 class Core(DynamicLibrary):
     DL = "libmupen64plus.so"
@@ -139,16 +134,26 @@ class Core(DynamicLibrary):
         self.open = False
         super().__init__(dl=dl)
 
-        config_path = ffi.NULL if config_path is None else ffi.new("char[]", bytes(config_path, encoding="utf8"))
-        data_path = ffi.NULL if data_path is None else ffi.new("char[]", bytes(data_path, encoding="utf8"))
+        config_path = self.ffi.NULL if config_path is None else self.ffi.new("char[]", bytes(config_path, encoding="utf8"))
+        data_path = self.ffi.NULL if data_path is None else self.ffi.new("char[]", bytes(data_path, encoding="utf8"))
+
+        @self.ffi.callback("ptr_StateCallback")
+        def _state_callback(ctx, param_type, new_value):
+            self.state_callback(CoreParam(param_type), new_value)
+        self._state_callback = _state_callback
+
+        @self.ffi.callback("ptr_DebugCallback")
+        def _debug_callback(ctx, level, message):
+            self.debug_callback(MsgLevel(level), str(self.ffi.string(message), encoding="utf8"))
+        self._debug_callback = _debug_callback
 
         check_rc(self.handle.CoreStartup(
             CORE_API_VERSION,
             config_path,
             data_path,
-            self.ptr,
+            self.ffi.NULL,
             _debug_callback,
-            self.ptr,
+            self.ffi.NULL,
             _state_callback,
         ))
 
@@ -170,24 +175,24 @@ class Core(DynamicLibrary):
         self.config_debugger(debugger)
 
     def config_debugger(self, value):
-        section = ffi.new("m64p_handle *")
+        section = self.ffi.new("m64p_handle *")
         check_rc(self.handle.ConfigOpenSection(b"Core", section))
-        value = ffi.new("int *", self.debugger)
+        value = self.ffi.new("int *", self.debugger)
         self.handle.ConfigSetParameter(section, b"EnableDebugger", Type.BOOL, value)
 
     @requires_debugger
     def init_debugger(self):
-        @ffi.callback("void ()")
+        @self.ffi.callback("void ()")
         def _dbg_frontend_init():
             self.dbg_init_callback()
         self._dbg_frontend_init = _dbg_frontend_init
 
-        @ffi.callback("void (unsigned int)")
+        @self.ffi.callback("void (unsigned int)")
         def _dbg_frontend_update(pc):
             self.dbg_update_callback(pc)
         self._dbg_frontend_update = _dbg_frontend_update
 
-        @ffi.callback("void ()")
+        @self.ffi.callback("void ()")
         def _dbg_frontend_vi():
             self.dbg_vi_callback()
         self._dbg_frontend_vi = _dbg_frontend_vi
@@ -232,7 +237,7 @@ class Core(DynamicLibrary):
         check_rc(self.handle.CoreDoCommand(Command.ROM_OPEN, len(rom), rom))
 
     def rom_close(self):
-        check_rc(self.handle.CoreDoCommand(Command.ROM_CLOSE, 0, ffi.NULL))
+        check_rc(self.handle.CoreDoCommand(Command.ROM_CLOSE, 0, self.ffi.NULL))
 
     def attach_plugin(self, plugin: "Plugin"):
         for plugin_type in ["video", "audio", "input", "rsp"]:
@@ -263,13 +268,13 @@ class Core(DynamicLibrary):
                 self.detach_plugin(existing_plugin)
 
     def get_default_plugins(self):
-        section = ffi.new("m64p_handle *")
+        section = self.ffi.new("m64p_handle *")
         check_rc(self.handle.ConfigOpenSection(b"UI-Console", section))
-        static_string = ffi.new("char[1024]")
+        static_string = self.ffi.new("char[1024]")
 
         rc = self.handle.ConfigGetParameter(section[0], b"PluginDir", Type.STRING, static_string, 1024)
         if rc == Error.SUCCESS:
-            self.plugin_dir = str(ffi.string(static_string), encoding="utf8")
+            self.plugin_dir = str(self.ffi.string(static_string), encoding="utf8")
         elif rc == Error.INPUT_INVALID:
             self.plugin_dir = ""
         else:
@@ -278,7 +283,7 @@ class Core(DynamicLibrary):
         def get_plugin(plugin_name):
             rc = self.handle.ConfigGetParameter(section[0], bytes(plugin_name, encoding="latin1"), Type.STRING, static_string, 1024)
             if rc == Error.SUCCESS:
-                return os.path.abspath(os.path.join(self.plugin_dir, str(ffi.string(static_string), encoding="utf8")))
+                return os.path.abspath(os.path.join(self.plugin_dir, str(self.ffi.string(static_string), encoding="utf8")))
             elif rc == Error.INPUT_INVALID:
                 return None
             else:
@@ -316,30 +321,30 @@ class Core(DynamicLibrary):
             self.attach_plugin(plugin)
 
     def execute(self):
-        check_rc(self.handle.CoreDoCommand(Command.EXECUTE, 0, ffi.NULL))
+        check_rc(self.handle.CoreDoCommand(Command.EXECUTE, 0, self.ffi.NULL))
 
     def stop(self):
-        check_rc(self.handle.CoreDoCommand(Command.STOP, 0, ffi.NULL))
+        check_rc(self.handle.CoreDoCommand(Command.STOP, 0, self.ffi.NULL))
 
     def pause(self):
-        check_rc(self.handle.CoreDoCommand(Command.PAUSE, 0, ffi.NULL))
+        check_rc(self.handle.CoreDoCommand(Command.PAUSE, 0, self.ffi.NULL))
 
     def resume(self):
-        check_rc(self.handle.CoreDoCommand(Command.RESUME, 0, ffi.NULL))
+        check_rc(self.handle.CoreDoCommand(Command.RESUME, 0, self.ffi.NULL))
 
     def state_save(self, filename: Optional[str]=None):
-        check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
+        check_rc(self.handle.CoreDoCommand(Command.STATE_SAVE, 1, self.ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
 
     def state_load(self, filename: Optional[str]=None):
-        check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
+        check_rc(self.handle.CoreDoCommand(Command.STATE_LOAD, 1, self.ffi.NULL if filename is None else bytes(filename, encoding="utf8")))
 
     def state_query(self, param: CoreParam) -> int:
-        value = ffi.new("int *")
+        value = self.ffi.new("int *")
         check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_QUERY, param, value))
         return value[0]
 
     def state_set(self, param: CoreParam, value: int) -> None:
-        value_ptr = ffi.new("int *", value)
+        value_ptr = self.ffi.new("int *", value)
         check_rc(self.handle.CoreDoCommand(Command.CORE_STATE_SET, param, value_ptr))
 
     def debug_mem_read_64(self, address: int) -> int:
@@ -394,8 +399,8 @@ class Plugin(DynamicLibrary):
 
         check_rc(self.handle.PluginStartup(
             self.core.handle_raw,
-            self.core.ptr,
-            _debug_callback,
+            self.core.ffi.NULL,
+            self.core._debug_callback,
         ))
 
         self.open = True
@@ -428,12 +433,12 @@ class PythonPlugin(Plugin):
         self.open = False
         DynamicLibrary.__init__(self)
         self.core = core
-        self.handle.handle = ffi.cast("void *", id(self)) # XXX using id to get a pointer seems sketchy
+        self.handle.handle = self.core.ffi.cast("void *", id(self)) # XXX using id to get a pointer seems sketchy
 
         check_rc(self.handle.PluginStartup(
             self.core.handle_raw,
-            self.core.ptr,
-            _debug_callback,
+            self.core.ffi.NULL,
+            self.core._debug_callback,
         ))
 
         self.open = True

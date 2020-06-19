@@ -3,7 +3,7 @@ import struct
 import threading
 import time
 
-from muppy import InputPlugin, ControllerInfo, Core, Plugin, PluginType, CoreParam, EmuState, DbgRunState, ffi, check_rc, Type
+from muppy import InputPlugin, ControllerInfo, Core, Plugin, PluginType, CoreParam, EmuState, DbgRunState, check_rc, Type
 from typing import List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -41,16 +41,16 @@ class FuncCore(Core):
         self.state_set(CoreParam.SPEED_LIMITER, 0)
 
         # XXX Turning off the OSD doesn't work?
-        #section = ffi.new("m64p_handle *")
+        #section = self.ffi.new("m64p_handle *")
         #check_rc(self.handle.ConfigOpenSection(b"Core", section))
         #value = ffi.new("int *", 0)
         #self.handle.ConfigSetParameter(section, b"OnScreenDisplay", Type.BOOL, value)
 
-        #section = ffi.new("m64p_handle *")
+        #section = self.ffi.new("m64p_handle *")
         #check_rc(self.handle.ConfigOpenSection(b"Video-Rice", section))
-        #value = ffi.new("int *", 1)
+        #value = self.ffi.new("int *", 1)
         #self.handle.ConfigSetParameter(section, b"InN64Resolution", Type.BOOL, value)
-        #value = ffi.new("int *", 1)
+        #value = self.ffi.new("int *", 1)
         #self.handle.ConfigSetParameter(section, b"ShowFPS", Type.BOOL, value)
 
     def start(self, _):

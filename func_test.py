@@ -3,8 +3,7 @@ import muppy
 from muppy.func import FuncCore
 import numpy as np
 import random
-import queue
-import threading
+import multiprocessing
 import time
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +27,7 @@ def merge(actions1, actions2):
         return random.sample(everything, 400)
     return everything
 
-def f(actions):
+def f(worker, actions):
     inputs = [[0, 0, 0] for _ in range(240)]
     goal = np.array([77.0, -3045.0])
 
@@ -49,12 +48,12 @@ def f(actions):
 def worker_thread():
     core = FuncCore("/home/eric/sm64.jp.z64")
     while True:
-        action, data = incoming_q.get()
+        action, data = incoming_queue.get()
         if action == "SHUTDOWN":
             break
         elif action == "RUN":
-            result = f(data)
-            outgoing_q.put((data, result))
+            result = f(core, data)
+            outgoing_queue.put((data, result))
     core.close()
 
 def shutdown():
@@ -69,14 +68,13 @@ def startup(n_workers):
     global incoming_queue, outgoing_queue
 
     workers = []
-    incoming_queue = queue.Queue()
-    outgoing_queue = queue.Queue()
+    incoming_queue = multiprocessing.Queue()
+    outgoing_queue = multiprocessing.Queue()
 
     for i in range(n_workers):
-        t = threading.Thread(target=worker_thread, daemon=True)
+        t = multiprocessing.Process(target=worker_thread, daemon=True)
         workers.append(t)
         t.start()
-        time.sleep(3)
 
 def request_work(data):
     global incoming_queue
